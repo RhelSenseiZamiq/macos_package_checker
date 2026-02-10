@@ -184,3 +184,127 @@ python3 xp_app_manager.py
 Created by **Aykhan** as a hacker‑style utility and portfolio project.  
 Use responsibly on personal systems; no warranty is provided.
 
+---
+
+### 9. Architecture & Internals (Technical)
+
+- **UI framework**: `PyQt6` (`QMainWindow`, `QTabWidget`, `QTableWidget`, `QTextEdit`, dialogs, custom `QWidget` for Matrix rain)
+- **Threads**:
+  - `ScanWorker` (`QThread`): enumerates apps, Homebrew, pip, and system packages
+  - `ProcessWorker` (`QThread`): runs `ps aux` and parses processes
+  - `DiskWorker` (`QThread`): reads disk usage via `shutil.disk_usage("/")`
+  - `UninstallWorker` (`QThread`): executes uninstall shell commands and streams logs
+- **Main tabs**:
+  - `[PACKAGES]` → package inventory, filters, stats, uninstall/export actions
+  - `[PROCESSES]` → live process list + kill actions
+  - `[TERMINAL]` → log console (boot sequence + runtime logs)
+
+#### 9.1. Scanning logic
+
+- **Applications**
+  - Folders scanned:
+    - `/Applications`
+    - `~/Applications`
+  - For each `*.app` bundle:
+    - Reads `Contents/Info.plist` with `plistlib` to get `CFBundleShortVersionString` / `CFBundleVersion`
+    - Recursively walks the bundle to compute size in MB
+  - Each app is represented as:
+    - `name`, `version`, `size_mb`, `kind` (`Application` or `User App`), `path`, `uninstall_cmd`
+
+- **Homebrew formulae**
+  - Runs:
+    - `brew list --formula --versions`
+    - `brew --cellar`
+  - Calculates size of each formula directory under the Cellar
+  - Builds uninstall command: `brew uninstall --formula NAME`
+
+- **Homebrew casks**
+  - Runs: `brew list --cask --versions`
+  - No size calculation (shown as `-`)
+  - Builds uninstall command: `brew uninstall --cask NAME`
+
+- **pip packages**
+  - Runs: `pip3 list --format=json`
+  - For each package:
+    - Stores name + version
+    - Builds uninstall command: `pip3 uninstall -y --break-system-packages NAME`
+
+- **System packages**
+  - Runs:
+    - `pkgutil --pkgs`
+    - For each pkg ID: `pkgutil --pkg-info PKG_ID` to read version
+  - Builds uninstall command: `pkgutil --forget PKG_ID`
+
+All of these results are merged into a single `all_items` list and displayed in the `[PACKAGES]` table with color-coded rows by type.
+
+#### 9.2. Uninstall pipeline
+
+1. User selects rows (checkboxes in the first column).
+2. Clicks **`[UNINSTALL]`**.
+3. `HackerConfirmDialog` shows a summary of selected targets.
+4. `HackerPasswordDialog` prompts for the macOS account password.
+5. `UninstallWorker`:
+   - For each item, takes `uninstall_cmd` (e.g. `rm -rf "App.app"`).
+   - If the command is `rm -rf` or `pkgutil ...`, it prefixes with:
+     ```bash
+     echo 'PASSWORD' | sudo -S <uninstall_cmd>
+     ```
+   - For other commands (brew / pip), it runs them directly.
+   - Captures stdout/stderr and emits log lines to the `[TERMINAL]` tab.
+6. When done, it shows a summary: `N removed, M failed`, and automatically triggers a rescan.
+
+#### 9.3. Process manager
+
+- Executes `ps aux` once per scan, parses the output into:
+  - `user`, `pid`, `%CPU`, `%MEM`, `command`
+- Displays in a sortable `QTableWidget`:
+  - Numeric sorting for PID / CPU / MEM using `UserRole` data
+  - Color highlights:
+    - High CPU / MEM in **orange** or **red**
+- Kills:
+  - On `[KILL -9]`, sends `kill -9 PID`, then rescans processes.
+
+#### 9.4. Disk usage panel
+
+- Uses `shutil.disk_usage("/")`:
+  - `total_gb`, `used_gb`, `free_gb`, `% used`
+- Color‑codes usage:
+  - `< 70%` → green
+  - `70–90%` → orange
+  - `> 90%` → red
+
+---
+
+### 10. Development Notes
+
+- **Python version**: target is modern Python 3 on macOS.
+- **Style**:
+  - Heavy use of PyQt stylesheets for the **Matrix / hacker** aesthetic.
+  - Monospace fonts (`Menlo`, `Monaco`, `Courier New`) everywhere.
+- **Platform assumptions**:
+  - macOS only (uses `platform.mac_ver()`, `pkgutil`, `.app` bundles, Homebrew).
+  - Not intended for Linux/Windows without changes.
+
+#### 10.1. Running from source (dev mode)
+
+```bash
+git clone https://github.com/RhelSenseiZamiq/macos_package_checker.git
+cd macos_package_checker
+python3 xp_app_manager.py
+```
+
+You can also modify `xp_app_manager.py` directly and rerun to experiment with the UI or logic.
+
+---
+
+### 11. Known Limitations / Ideas
+
+- Does not track or undo changes (no “recycle bin”).
+- System package removal via `pkgutil --forget` only forgets receipts; it does not fully uninstall underlying files.
+- No sandboxing of commands; assumes a trusted user on a personal macOS workstation.
+- Possible future enhancements:
+  - Dry‑run mode (show commands without executing).
+  - Per‑type safety levels (e.g. block some system packages by default).
+  - Live process auto‑refresh.
+
+
