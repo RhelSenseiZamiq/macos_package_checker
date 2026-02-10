@@ -1,0 +1,3 @@
+[submodule "macos_package_checker"]
+	path = macos_package_checker
+	url = https://github.com/RhelSenseiZamiq/macos_package_checker.git
